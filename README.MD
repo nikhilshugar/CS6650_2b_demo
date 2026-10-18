@@ -33,7 +33,22 @@ A few things the spec doesn't cover, so I decided them:
 
 ## How to deploy it
 
-You need AWS credentials for `us-west-2` (with a role called `LabRole`, which Learner Lab has), Terraform, and Docker running.
+**You need:** the AWS CLI, Terraform, and Docker (running). An AWS account with a role called `LabRole` (AWS Academy Learner Lab has it).
+
+**1. Set your AWS credentials** (Learner Lab: copy them from "AWS Details"):
+
+```bash
+aws configure                                   # access key, secret key, region us-west-2
+aws configure set aws_session_token <your token>
+```
+
+**2. Windows only:** run this in the same PowerShell window you'll use for Terraform, so it can find Docker:
+
+```powershell
+$env:DOCKER_HOST = "npipe:////./pipe/docker_engine"
+```
+
+**3. Deploy** (type `yes` when asked; it builds the image, pushes it and creates 8 resources):
 
 ```bash
 git clone https://github.com/nikhilshugar/CS6650_2b_demo.git
@@ -42,13 +57,9 @@ terraform init
 terraform apply
 ```
 
-On Windows, run this first in the same PowerShell window so Terraform can find Docker:
+**4. Get the public IP** (wait about a minute first):
 
-```powershell
-$env:DOCKER_HOST = "npipe:////./pipe/docker_engine"
-```
-
-Wait a minute, then get the public IP:
+Mac / Linux:
 
 ```bash
 TASK=$(aws ecs list-tasks --cluster CS6650L2-cluster --service-name CS6650L2 --query 'taskArns[0]' --output text)
@@ -56,7 +67,17 @@ ENI=$(aws ecs describe-tasks --cluster CS6650L2-cluster --tasks $TASK --query "t
 aws ec2 describe-network-interfaces --network-interface-ids $ENI --query 'NetworkInterfaces[0].Association.PublicIp' --output text
 ```
 
-When done: `terraform destroy`
+Windows PowerShell:
+
+```powershell
+$TASK = aws ecs list-tasks --cluster CS6650L2-cluster --service-name CS6650L2 --query 'taskArns[0]' --output text
+$ENI = aws ecs describe-tasks --cluster CS6650L2-cluster --tasks $TASK --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value" --output text
+aws ec2 describe-network-interfaces --network-interface-ids $ENI --query 'NetworkInterfaces[0].Association.PublicIp' --output text
+```
+
+**5. Test it:** `curl http://<public-ip>:8080/products/1` should return product 1. More examples are below.
+
+**6. When done:** `terraform destroy` (type `yes`). On Windows, set `DOCKER_HOST` first again.
 
 To run it locally instead: `cd src` then `go run .`, or `docker build -t product-service .` and `docker run --rm -p 8080:8080 product-service`.
 
