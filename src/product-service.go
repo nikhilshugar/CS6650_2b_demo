@@ -3,13 +3,19 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type Product struct {
@@ -79,6 +85,26 @@ func (s *ProductStore) Seed(n int32) {
 
 const seedCount = 1000
 
+var (
+	httpRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "http_requests_total",
+		Help: "Total HTTP requests, by method, route and status code.",
+	}, []string{"method", "route", "status"})
+
+	httpErrors = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "http_request_errors_total",
+		Help: "HTTP requests that returned a non-2xx status code.",
+	}, []string{"method", "route", "status"})
+
+	httpDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "http_request_duration_seconds",
+		Help:    "Time to handle a request, in seconds.",
+		Buckets: []float64{0.00001, 0.000025, 0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5},
+	}, []string{"method", "route"})
+)
+
+var logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
 type productHandler struct {
 	store *ProductStore
 }
@@ -88,8 +114,9 @@ func main() {
 	store.Seed(seedCount)
 	h := &productHandler{store: store}
 
+	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
-	router.Use(gin.Logger())
+	router.Use(observe) // first, so it also sees the 500s produced by the recovery handler
 	router.Use(gin.CustomRecovery(func(c *gin.Context, recovered any) {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, ErrorResponse{
 			Error:   "INTERNAL_ERROR",
@@ -101,8 +128,42 @@ func main() {
 
 	router.GET("/products/:productId", h.getProduct)
 	router.POST("/products/:productId/details", h.addProductDetails)
+	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	router.Run(":8080")
+}
+
+func observe(c *gin.Context) {
+	if c.Request.URL.Path == "/metrics" {
+		c.Next()
+		return
+	}
+
+	start := time.Now()
+	c.Next()
+	elapsed := time.Since(start)
+
+	route := c.FullPath()
+	if route == "" {
+		route = "unmatched"
+	}
+	method := c.Request.Method
+	status := c.Writer.Status()
+	code := strconv.Itoa(status)
+
+	httpRequests.WithLabelValues(method, route, code).Inc()
+	if status < 200 || status > 299 {
+		httpErrors.WithLabelValues(method, route, code).Inc()
+	}
+	httpDuration.WithLabelValues(method, route).Observe(elapsed.Seconds())
+
+	logger.Info("request",
+		"method", method,
+		"endpoint", route,
+		"path", c.Request.URL.Path,
+		"status", status,
+		"duration_ms", float64(elapsed.Microseconds())/1000,
+	)
 }
 
 func simulateError(c *gin.Context) {

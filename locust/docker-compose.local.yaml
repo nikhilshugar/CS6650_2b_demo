@@ -1,0 +1,10 @@
+services:
+  master:
+    networks: [default, observability]
+  worker:
+    networks: [default, observability]
+
+networks:
+  observability:
+    name: observability_default
+    external: true
