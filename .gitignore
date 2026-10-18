@@ -4,3 +4,6 @@
 **/.terraform/
 .idea/
 __pycache__/
+.env
+*.pem
+*.exe
